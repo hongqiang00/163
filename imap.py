@@ -25,12 +25,13 @@ class ImailReceiver:
         self.mail_content = body  # 邮件正文
 
 class Person:
-    def __init__(self,name:str,phone:str,intention,others:str=None,area:str=None):
+    def __init__(self,name:str,phone:str,intention,wechat=None,others:str=None,area:str=None):
         self.name=name
         self.phone=phone
         self.area=area
         self.others=others
         self.intention=intention
+        self.wechat=wechat
 
 
 class IMAIL_163:
@@ -44,7 +45,7 @@ class IMAIL_163:
         # 尝试建立SSL加密的IMAP连接并登录
         # 异常处理增强
         try:
-            imap_client = imaplib.IMAP4_SSL(host)  # 确保使用TLS 1.2
+            imap_client = imaplib.IMAP4_SSL(host, 993)  # 确保使用TLS 1.2
             response, data =imap_client.login(self.email_account, self.email_password)
             if response == "OK":
                 print(f"登录成功")
@@ -94,10 +95,11 @@ class IMAIL_163:
         self.client.logout()
 
     def read_emailfolder(self, mailbox_folder):
+        encode_mailbox_folder=encode_utf7_folder_name(mailbox_folder)
         email_info_list=[]
         try:
             # 选择邮箱文件夹
-            typ, data = self.client.select(mailbox_folder)
+            typ, data = self.client.select(encode_mailbox_folder)
             if typ != "OK":
                 print(f"选择邮箱失败: {data}")
                 return
@@ -276,7 +278,7 @@ def main():
             if client is None:
                 client = IMAIL_163("qu_personal@163.com")
                 client.email_folders_info()
-            client.read_emailfolder(encode_utf7_folder_name("垃圾邮件"))
+            client.read_emailfolder("垃圾邮件")
             # 对两个邮箱进行操作
             time.sleep(10)
         except Exception as e:

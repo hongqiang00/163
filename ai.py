@@ -2,6 +2,7 @@ import os
 import json
 from openai import OpenAI
 from imap import Person
+from phone_info import ip_phone_get
 
 class QwenAPIHandler:
     def __init__(self, api_key=None):
@@ -17,7 +18,7 @@ class QwenAPIHandler:
                 "content": (
                     "你是一个信息提取助手。我会给你一段文本，其中可能包含多个人的信息。"
                     "请提取其中的关键信息，并按照以下 JSON 格式返回："
-                    "[{\"学生姓名\":\"\",\"联系电话\":\"\",\"意向地区\":\"\",\"源文本内容\":\"\"}, ...]。"
+                    "[{\"学生姓名\":\"\",\"联系电话\":\"\",\"微信\":\"\",\"意向地区\":\"\",\"源文本内容\":\"\"}, ...]。"
                     "如果某条信息无法提取完整，请将其字段值设为空字符串。"
                 ),
             }
@@ -67,8 +68,8 @@ class QwenAPIHandler:
                 extracted_info = json.loads(cleaned_response)
                 print("提取的信息:")
                 for person in extracted_info:
-                    print(person)
-                    client=Person(person['学生姓名'],person['联系电话'],person['意向地区'],person['源文本内容'])
+                    # print(person)
+                    client=Person(person['学生姓名'],person['联系电话'],person['意向地区'],person['微信'],person['源文本内容'],ip_phone_get(person['联系电话']))
                     clients.append(client)
             except json.JSONDecodeError as e:
                 print(f"无法解析返回的内容为 JSON: {e}")
