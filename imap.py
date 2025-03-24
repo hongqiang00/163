@@ -34,7 +34,7 @@ class Person:
 
 
 class IMAIL_163:
-    def __init__(self, email_account: str, email_password: str):
+    def __init__(self, email_account: str, email_password: str=os.getenv("IMAP_PWD_163")):
         self.email_account=email_account
         self.email_password=email_password
         self.client=self._login()
@@ -274,7 +274,7 @@ def main():
     while True:
         try:
             if client is None:
-                client = IMAIL_163("qu_personal@163.com","VQpvEwCFdmqBa2tK")
+                client = IMAIL_163("qu_personal@163.com")
                 client.email_folders_info()
             client.read_emailfolder(encode_utf7_folder_name("垃圾邮件"))
             # 对两个邮箱进行操作
@@ -283,7 +283,7 @@ def main():
              if retry_limit > 0:
                 print(f"邮件读取失败,错误：{e}--尝试重新登陆imap")
                 # imap_client_close(client)
-                client=IMAIL_163("qu_personal@163.com","VQpvEwCFdmqBa2tK")
+                client=IMAIL_163("qu_personal@163.com")
                 retry_limit -= 1
                 time.sleep(retry_wait)  # 等待一段时间后重试
              else:
