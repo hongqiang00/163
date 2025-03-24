@@ -1,2 +1,5 @@
-./data/
-./__pycache__/
+# 忽略项目根目录下的 data 目录及其所有内容
+/data/
+
+# 忽略所有 __pycache__ 目录及其内容
+__pycache__/
