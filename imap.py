@@ -7,20 +7,128 @@ from email.header import decode_header
 from email.utils import parseaddr
 import time
 from datetime import datetime
+from email.message import Message
 
-client = None
+class ImailReceiver:
+    def __init__(self, subject: str, sender: str, mail_address, body:dict):
+        """
+        初始化邮件对象。
+        
+        :param subject: 邮件主题（字符串类型）
+        :param sender: 发件人邮箱地址（字符串类型）
+        :param receiver: 收件人邮箱地址（字符串类型）
+        :param body["attachments"] body["plain_text"] body["html"]: 邮件正文：附件，纯文本，html
+        """
+        self.mail_subject = subject
+        self.mail_from = sender
+        self.sender_email = mail_address
+        self.mail_content = body  # 邮件正文
 
-# 创建一个默认的SSL上下文对象，用于服务器认证
-# 参数设置为None，表示使用默认值，后续将通过代码明确指定SSL/TLS版本范围
-ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH, cafile=None, capath=None, cadata=None)
+class Person:
+    def __init__(self,name:str,phone:str,intention,others:str=None,area:str=None):
+        self.name=name
+        self.phone=phone
+        self.area=area
+        self.others=others
+        self.intention=intention
 
-# 指定SSL/TLS的最小版本为TLS 1.2，以确保连接使用的协议不低于此版本
-# 这是为了提高安全性，因为较老的版本可能有已知的漏洞
-ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
-# 指定SSL/TLS的最大版本为TLS 1.3，以确保连接不会使用超出此版本的协议
-# TLS 1.3是最新的TLS版本，提供了更强的安全性和加密方法
-ssl_context.maximum_version = ssl.TLSVersion.TLSv1_3
+class IMAIL_163:
+    def __init__(self, email_account: str, email_password: str):
+        self.email_account=email_account
+        self.email_password=email_password
+        self.client=self._login()
+        self.email_flodernamelist=self.fetch_floders()
+        
+    def _login(self,host="imap.163.com" ):
+        # 尝试建立SSL加密的IMAP连接并登录
+        # 异常处理增强
+        try:
+            imap_client = imaplib.IMAP4_SSL(host)  # 确保使用TLS 1.2
+            response, data =imap_client.login(self.email_account, self.email_password)
+            if response == "OK":
+                print(f"登录成功")
+                return imap_client  # 返回 IMAP 客户端对象
+            else:
+                print(f"登录失败：{data}")
+                return None
+        except imaplib.IMAP4.error as e:
+            # 捕获登录失败的异常
+            print(f"登录失败: {e}")
+            return None
+        
+    def fetch_floders(self):
+        try:
+            # 发送ID命令给服务器，提供客户端信息
+            imaplib.Commands["ID"] = ('AUTH',)
+            args = ("name", self.email_account, "contact", self.email_account, "version", "1.0.0", "vendor", "myclient")
+            self.client._simple_command("ID", str(args).replace(",", "").replace("'", "\""))
+            # 获取邮箱文件夹列表
+            status, folders = self.client.list()
+            folder_list=[]
+            if status == "OK":
+                for folder in folders:
+                    # 解码文件夹信息
+                    folder_info = folder.decode('utf-8')
+                    # 提取文件夹名称
+                    match = re.search(r'"([^"]+)"$', folder_info)
+                    if match:
+                        folder_name_encoded = match.group(1)
+                        folder_name_decoded = decode_utf7_folder_name(folder_name_encoded)
+                        folder_list.append(folder_name_decoded)
+            else:
+                print("无法获取邮箱文件夹列表。")
+            return folder_list
+        except Exception as e:
+            print("获取文件夹错误")
+            return None
+
+    def email_folders_info(self):
+        print("邮箱文件夹如下：")
+        for folder in self.email_flodernamelist:
+            print(folder,end=" ",flush=True)
+        print()
+
+    def imap_client_close(self):
+        self.client.close()
+        self.client.logout()
+
+    def read_emailfolder(self, mailbox_folder):
+        email_info_list=[]
+        try:
+            # 选择邮箱文件夹
+            typ, data = self.client.select(mailbox_folder)
+            if typ != "OK":
+                print(f"选择邮箱失败: {data}")
+                return
+
+            print(f"已选中邮箱: {mailbox_folder}")
+
+            # 搜索未读邮件
+            typ, data = self.client.search(None, "UNSEEN")
+            if typ != "OK":
+                print(f"搜索未读邮件失败: {data}")
+                return
+
+            # 打印搜索结果
+            print(f"搜索结果类型: {typ}, 数据: {data}")
+            unseen_emails = data[0].decode('utf-8').split() if data[0] else []
+            print(f"未读邮件数量: {len(unseen_emails)}")
+
+            for unseen_email in unseen_emails:
+                _, data = self.client.fetch(unseen_email, '(RFC822)')
+                raw_email = data[0][1]
+                email_message = email.message_from_bytes(raw_email)
+                subject = decode_email_header(email_message['Subject'])
+                from_info = decode_header(email_message['From'])
+                sender_name,sender_email=decode_email_senderinfo(from_info)
+                email_body=extract_all_parts(email_message)
+                email_info_list.append(ImailReceiver(subject,sender_name,sender_email,email_body))
+
+        except Exception as e:
+            print(f"读取邮箱时发生错误: {e}")
+        
+        return email_info_list
 
 # 解码 UTF-7 编码的文件夹名称
 def decode_utf7_folder_name(encoded_name):
@@ -32,64 +140,50 @@ def decode_utf7_folder_name(encoded_name):
         print(f"解码失败: {e}")
         return encoded_name  # 如果解码失败，返回原始值
 
-def login163(user=None, pwd=None, host="imap.163.com" ):
-    # 使用环境变量作为默认值，如果用户没有提供邮箱用户名和密码
-    # 使用配置文件或环境变量代替硬编码的值
-    if not user:
-        user = os.getenv('EMAIL_USER', 'ustsszedu@163.com')
-    if not pwd:
-        pwd = os.getenv('EMAIL_PWD', 'KOXFORXDBFXYKSEK')
-
-    # 尝试建立SSL加密的IMAP连接并登录
-    # 异常处理增强
+# 编码函数：从 UTF-8 转换为 Modified UTF-7
+def encode_utf7_folder_name(folder_name):
     try:
-        imap_client = imaplib.IMAP4_SSL(host, ssl_context=ssl_context)  # 确保使用TLS 1.2
-        imap_client.login(user, pwd)
-    except imaplib.IMAP4.error as e:
-        print(f"登录失败: {e}")
-        return None
+        # 检查字符串是否仅包含 ASCII 字符
+        if all(ord(c) < 128 for c in folder_name):
+            return folder_name  # 如果是纯 ASCII，直接返回
 
-    # 获取邮箱文件夹列表
-    status, folders = imap_client.list()
-    if status == "OK":
-        print("邮箱文件夹列表：")
-        for folder in folders:
-            # 解码文件夹信息
-            folder_info = folder.decode('utf-8')
-            # 提取文件夹名称
-            match = re.search(r'"([^"]+)"$', folder_info)
-            if match:
-                folder_name_encoded = match.group(1)
-                folder_name_decoded = decode_utf7_folder_name(folder_name_encoded)
-                print(folder_name_decoded)
-    else:
-        print("无法获取邮箱文件夹列表。")
-    return imap_client
+        # 将字符串转换为 UTF-16BE 编码
+        utf16_bytes = folder_name.encode("utf-16be")
+        
+        # Base64 编码并去掉尾部的 '='
+        import base64
+        b64_encoded = base64.b64encode(utf16_bytes).decode("ascii").rstrip("=")
+        
+        # 构造 Modified UTF-7 格式
+        return f"&{b64_encoded}-"
+    except Exception as e:
+        print(f"编码失败: {e}")
+        return folder_name  # 如果编码失败，返回原始值
+    
+def decode_email_senderinfo(sender_info):
+    name_parts = []
+    for part, charset in sender_info:
+        if isinstance(part, bytes):
+            if charset:
+                decoded_part = part.decode(charset)
+            else:
+                decoded_part = part.decode('utf-8', errors='replace')
+        else:
+            decoded_part = part
+        name_parts.append(decoded_part)
 
-    # # 关闭连接，退出
-    # imap_client.close()
-    # imap_client.logout()
-def imap_client_close(imap_client):
-    imap_client.close()
-    imap_client.logout()
+    full_name = ''.join(name_parts).strip() 
+    from_person,email_address=parseaddr(full_name)
+    return from_person,email_address
 
 def decode_email_header(header):
     """
-    解码电子邮件头信息。
-
-    电子邮件头信息可能包含多种编码，这个函数旨在解析头信息并返回解码后的字符串。
-    如果头信息是ASCII码，则直接返回；如果是非ASCII码，会根据编码类型进行解码。
-
-    参数:
-    header (str): 需要解码的电子邮件头信息。
-
-    返回:
+    解码电子邮件主题的头信息。
     str: 解码后的字符串。如果解码过程中包含多种编码，会返回一个元组，包含解码后的字符串和对应的编码类型。
     """
-    # 解码头信息，返回一个包含解码结果和编码类型的元组
     # 列表
     decoded_header = decode_header(header)[0]
-    # print(decoded_header)
+
     # 判断解码结果是否为元组，如果是，说明存在多种编码，需要进一步解码
     if isinstance(decoded_header, tuple):
         # 对元组中的字符串进行解码，并返回解码后的结果
@@ -103,42 +197,75 @@ def decode_email_header(header):
             decoded_part = part
         return decoded_part
     else:
-        # 如果解码结果不是元组，直接返回解码后的字符串
+        print("电子邮件头解码错误")
         return None
 
-def extract_text_body(email_message):
+
+def extract_all_parts(email_message: Message):
     """
-    从电子邮件消息中提取纯文本正文。
+    从电子邮件消息中提取所有部分，包括纯文本、HTML、附件等。
     
     参数:
     email_message: 一个电子邮件消息对象，可以是使用Python email库构建的或从文件中读取的。
     
     返回:
-    一个字符串，包含电子邮件的纯文本正文。如果没有找到纯文本正文或邮件为空，则返回空字符串。
+    一个字典，包含以下键值对：
+    - "plain_text": 纯文本正文。
+    - "html": HTML 格式的正文。
+    - "attachments": 附件列表，每个附件是一个字典，包含文件名和内容。
     """
-    # 初始化一个字符串，用于存储提取的文本正文
-    all_text_body = ""
+    result = {
+        "plain_text": "",
+        "html": "",
+        "attachments": []
+    }
     
-    # 遍历电子邮件的每一个部分
+    # 遍历邮件的每个部分
     for part in email_message.walk():
         # 获取当前部分的Content-Type
-        ctype = part.get_content_type()
+        content_type = part.get_content_type()
         # 获取当前部分的Content-Disposition
-        cdispo = str(part.get('Content-Disposition'))
+        content_disposition = str(part.get("Content-Disposition", "")).lower()
         
-        # 检查当前部分是否为纯文本且不是附件
-        if ctype == 'text/plain' and 'attachment' not in cdispo:
-            # 获取当前部分的payload（实际内容），并解码
-            body = part.get_payload(decode=True)
-            # 获取当前部分的内容字符集
-            charset = part.get_content_charset()
-            # 将解码后的文本添加到存储所有文本正文的字符串中
-            all_text_body += body.decode(charset, errors='replace')
-            # 找到纯文本正文后立即终止循环，以提高效率
-            break  # 如果找到文本部分，即停止搜索，提高效率
+        # 获取当前部分的payload（实际内容），并解码
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        
+        # 获取字符集，默认使用 utf-8
+        charset = part.get_content_charset() or "utf-8"
+        
+        # 处理不同类型的 MIME 部分
+        if content_type == "text/plain" and "attachment" not in content_disposition:
+            # 提取纯文本内容
+            try:
+                result["plain_text"] += payload.decode(charset, errors="replace")
+            except LookupError:
+                result["plain_text"] += payload.decode("utf-8", errors="replace")
+        
+        elif content_type == "text/html" and "attachment" not in content_disposition:
+            # 提取 HTML 内容
+            try:
+                result["html"] += payload.decode(charset, errors="replace")
+            except LookupError:
+                result["html"] += payload.decode("utf-8", errors="replace")
+        
+        elif "attachment" in content_disposition or content_type.startswith(("image/", "application/")):
+            # 提取附件
+            filename = part.get_filename()
+            if not filename:
+                filename = "unnamed_attachment"
+            
+            result["attachments"].append({
+                "filename": filename,
+                "content": payload
+            })
     
-    # 返回收集到的所有文本正文
-    return all_text_body
+    # 去除多余空白
+    result["plain_text"] = result["plain_text"].strip()
+    result["html"] = result["html"].strip()
+    
+    return result
     
 def main():
     retry_limit = 5
@@ -147,14 +274,16 @@ def main():
     while True:
         try:
             if client is None:
-                client = login163("qu_personal@163.com","VQpvEwCFdmqBa2tK")
+                client = IMAIL_163("qu_personal@163.com","VQpvEwCFdmqBa2tK")
+                client.email_folders_info()
+            client.read_emailfolder(encode_utf7_folder_name("垃圾邮件"))
             # 对两个邮箱进行操作
             time.sleep(10)
         except Exception as e:
              if retry_limit > 0:
                 print(f"邮件读取失败,错误：{e}--尝试重新登陆imap")
                 # imap_client_close(client)
-                client=login163("qu_personal@163.com","VQpvEwCFdmqBa2tK")
+                client=IMAIL_163("qu_personal@163.com","VQpvEwCFdmqBa2tK")
                 retry_limit -= 1
                 time.sleep(retry_wait)  # 等待一段时间后重试
              else:
