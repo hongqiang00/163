@@ -40,6 +40,7 @@ class IMAIL_163:
         self.email_password=email_password
         self.client=self._login()
         self.email_flodernamelist=self.fetch_floders()
+        self.selected_floders=['edu66']
         
     def _login(self,host="imap.163.com" ):
         # 尝试建立SSL加密的IMAP连接并登录
@@ -91,8 +92,15 @@ class IMAIL_163:
         print()
 
     def imap_client_close(self):
-        self.client.close()
-        self.client.logout()
+        """安全地关闭 IMAP 连接"""
+        try:
+            if self.client:  # 确保 IMAP 客户端存在
+                if self.client.state == "SELECTED":  # 如果当前状态是 SELECTED
+                    self.client.close()  # 调用 CLOSE 命令
+                self.client.logout()  # 调用 LOGOUT 命令
+                print("IMAP 连接已安全关闭。")
+        except Exception as e:
+            print(f"关闭 IMAP 连接时发生错误: {e}")
 
     def read_emailfolder(self, mailbox_folder):
         encode_mailbox_folder=encode_utf7_folder_name(mailbox_folder)
@@ -278,7 +286,7 @@ def main():
             if client is None:
                 client = IMAIL_163("qu_personal@163.com")
                 client.email_folders_info()
-            client.read_emailfolder("垃圾邮件")
+            client.read_emailfolder("edu66")
             # 对两个邮箱进行操作
             time.sleep(10)
         except Exception as e:

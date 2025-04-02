@@ -4,6 +4,20 @@ from tkinter import messagebox
 import configparser
 import os
 from cryptography.fernet import Fernet, InvalidToken # <-- Import Fernet and InvalidToken
+import threading
+import queue
+import imaplib # 用于捕获 IMAP 错误
+import time
+try:
+    from imap import IMAIL_163 # <-- 导入你的主类
+    from ai import QwenAPIHandler
+    # 注意：imap.py 中的辅助函数（如 decode_*, extract_all_parts）会被 IMAIL_163 内部使用，通常无需在此显式导入
+    BACKEND_AVAILABLE = True
+    print("后端模块 imap.py (IMAIL_163) 和 ai.py 导入成功。")
+except ImportError as e:
+    print(f"警告：未能导入后端模块 (imap.py 或 ai.py) ({e})。邮件处理功能将不可用。")
+    BACKEND_AVAILABLE = False
+
 
 # --- Constants ---
 SIDEBAR_BG = "#F0F0F0"
@@ -73,58 +87,67 @@ DEFAULT_PROXY_MODEL = "qwen"
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        # ... (window setup remains the same) ...
         self.title("类 Clash 交互界面")
-        self.geometry("700x500")
+        self.geometry("900x600")
 
         # --- State ---
         self.logged_in_user = None
         self.current_frame_name = None
         self.sidebar_buttons = {}
         self.remembered_username = ""
-        self.remembered_password = "" # <-- Store loaded DECRYPTED password
+        self.remembered_password = ""
         self.should_remember = False
         self.general_email = ""
         self.general_imap_password = ""
-        self.proxy_model = DEFAULT_PROXY_MODEL # 初始化默认模型
-
+        self.email_client = None
+        self.handler = QwenAPIHandler()
+        self.sleep_time=30
+        self.proxy_model = DEFAULT_PROXY_MODEL
+        # --- Backend Processing State ---
+        self.is_processing = False          # <-- Correctly initialized
+        self.processing_queue = queue.Queue() # <-- Correctly initialized
+        
+        # --- Load Preferences FIRST ---
         self.load_user_preferences()
+
+        # --- Start background mail processing ---
+        # self.email_processing_bg()
 
         # --- Style Configuration ---
         self.style = ttk.Style(self)
-        # ... (style configuration remains the same) ...
-        self.style.configure(BUTTON_STYLE_NAME,
-                             anchor="w", padding=(10, 8), font=("Arial", 11),
-                             background=SIDEBAR_BG, relief="flat")
-        self.style.map(BUTTON_STYLE_NAME,
-                       background=[('active', ACTIVE_BUTTON_COLOR),
-                                   ('selected', ACTIVE_BUTTON_COLOR)])
-
+        self.style.configure(BUTTON_STYLE_NAME, anchor="w", padding=(10, 8), font=("Arial", 11), background=SIDEBAR_BG, relief="flat")
+        self.style.map(BUTTON_STYLE_NAME, background=[('active', ACTIVE_BUTTON_COLOR), ('selected', ACTIVE_BUTTON_COLOR)])
 
         # --- Create main layout frames ---
-        # ... (frame creation remains the same) ...
         self.sidebar_frame = tk.Frame(self, bg=SIDEBAR_BG, width=150)
         self.sidebar_frame.pack(side="left", fill="y")
-        self.sidebar_frame.pack_propagate(False)
+        # self.sidebar_frame.pack_propagate(False)
 
-        self.main_frame = tk.Frame(self)
-        self.main_frame.pack(side="right", fill="both", expand=True)
+        # --- Main Content Area (to hold pages and maybe status bar) ---
+        self.main_content_area = tk.Frame(self)
+        self.main_content_area.pack(side="right", fill="both", expand=True)
+
+        # --- >>> OPTIONAL BUT RECOMMENDED: Global Status Bar <<< ---
+        self.main_status_label = ttk.Label(self.main_content_area, text="就绪", anchor="w", relief=tk.SUNKEN)
+        self.main_status_label.pack(side="bottom", fill="x", padx=2, pady=(2,0))
+        # --- >>> Status Bar End <<< ---
+
+        # --- Page Container Frame (Parent is main_content_area now) ---
+        self.main_frame = tk.Frame(self.main_content_area)
+        self.main_frame.pack(side="top", fill="both", expand=True) # Pack above status bar
         self.main_frame.grid_rowconfigure(0, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=1)
 
         self.content_frames = {}
 
-        # --- Pass loaded preferences to LoginPage ---
-        self.login_frame = LoginPage(
-            parent=self.main_frame,
-            controller=self,
-            initial_username=self.remembered_username,
-            initial_remember=self.should_remember,
-            initial_password=self.remembered_password # <-- Pass loaded password
-        )
+        # --- Login Frame ---
+        self.login_frame = LoginPage(parent=self.main_frame, controller=self, initial_username=self.remembered_username, initial_remember=self.should_remember, initial_password=self.remembered_password)
         self.login_frame.grid(row=0, column=0, sticky="nsew")
         self.current_frame_name = "LoginPage"
         self.sidebar_frame.pack_forget()
+
+        # --- Start Queue Polling ---
+        self.after(100, self.process_queue) # <-- Correctly placed call to the METHOD
 
 
     def load_user_preferences(self):
@@ -333,8 +356,11 @@ class App(tk.Tk):
         else: # Otherwise, ensure checkbox is off
             self.login_frame.remember_me_var.set(False)
 
+        for frame in self.content_frames.values(): frame.grid_forget() # 隐藏所有内容页面
+        # ... (准备并显示登录页面) ...
         self.login_frame.grid(row=0, column=0, sticky="nsew")
         self.show_frame("LoginPage")
+        self.login_frame.bind_enter()
 
     def save_settings(self, settings_data):
         # ... (Identical to previous version) ...
@@ -343,7 +369,170 @@ class App(tk.Tk):
         print("设置已更新:", current_settings)
         messagebox.showinfo("成功", "参数设置已保存！")
 
+    def email_processing_bg(self):
+        try:
+            thread = threading.Thread(
+                target=self._run_processing_in_background,
+                args=(self.get_general_email(), self.get_general_imap_password(), self.get_proxy_model(), self.processing_queue),
+                daemon=True
+            )
+            thread.start()  
+        except:
+            pass
 
+    def stop_email_processing(self):
+        """停止后台线程"""
+        self.processing_queue.put({"type": "stop"})  # 发送停止信号
+        self.set_processing_state(False)
+        self.email_client.imap_client_close()
+        self.email_client=None
+        
+    def start_email_processing(self):
+        """启动后台线程来读取和分析邮件"""
+        # if self.is_processing:
+        #     messagebox.showinfo("提示", "正在处理中，请稍候...")
+        #     return
+
+        # 设置处理中状态
+        self.set_processing_state()
+
+        if(self.is_processing):
+            self.email_processing_bg()
+        else:
+            self.stop_email_processing()
+
+
+
+    def _run_processing_in_background(self, email, password, model, q):
+        """这个函数在单独的线程中运行 (使用 IMAIL_163 和 ai.analyze_qwen)"""
+        while(True):
+            if(self.is_processing==False):return
+            all_analysis_results = []
+            email_list = []
+
+            try:
+                # 阶段 1: 初始化并读取邮件
+                q.put({"type": "status", "data": "正在初始化邮箱连接..."})
+                # --- >>> 实例化你的 IMAIL_163 类 <<< ---
+                # 总是传递从 GUI 获取的 email 和 password
+                try:
+                    if self.email_client == None :# 用于确保最后关闭
+                        self.email_client = IMAIL_163(email_account=email, email_password=password)
+                    if not self.email_client.client: # 检查 _login 是否成功返回了客户端对象
+                        raise ConnectionRefusedError("邮箱登录失败，请检查账号或 IMAP 授权码。") # 更明确的错误
+                    q.put({"type": "status", "data": "连接成功！"})
+                    for folder in self.email_client.selected_floders:
+                        email_list+=self.email_client.read_emailfolder(folder)
+                    
+                    for email in email_list:
+                        all_analysis_results+self.handler.call_api(email.mail_content['plain_text'])
+                    q.put({"type": "status", "data": "邮件处理完成！"})
+                except ConnectionRefusedError as login_e: # 捕获我们自己抛出的
+                    raise login_e
+                
+            # --- 异常处理 ---
+            except (imaplib.IMAP4.error, ConnectionRefusedError, ConnectionError) as e:
+                err_msg = f"邮件处理失败: {e}"
+                # 尝试获取更具体的认证失败信息
+                if isinstance(e, ConnectionRefusedError) or "authentication failed" in str(e).lower():
+                    err_msg = "邮箱认证失败，请检查账号或 IMAP 授权码。"
+                elif isinstance(e, ConnectionError):
+                    err_msg = f"无法连接到邮箱服务器: {e}"
+                else: # 其他 IMAP 错误
+                    err_msg = f"IMAP 操作失败: {e}"
+                print(err_msg)
+                q.put({"type": "error", "data": err_msg})
+            except Exception as e: # 捕获所有其他意外错误
+                print(f"后台处理出错: {e}")
+                import traceback
+                traceback.print_exc()
+                q.put({"type": "error", "data": f"处理过程中发生未知错误: {e}"})
+            time.sleep(10)
+
+ # --- >>> DEFINITIONS for Missing Methods <<< ---
+    def process_queue(self):
+        """处理来自后台线程的消息队列"""
+        try:
+            message = self.processing_queue.get_nowait()
+            if isinstance(message, dict):
+                msg_type = message.get("type")
+                data = message.get("data")
+
+                if msg_type == "status":
+                    self.update_status(data)
+                elif msg_type == "result":
+                    self.display_results(data)
+                    self.update_status("处理完成。")
+                    self.set_processing_state(False) # Mark processing as finished
+                elif msg_type == "error":
+                    messagebox.showerror("处理错误", data)
+                    self.update_status(f"错误: {data[:50]}...")
+                    self.set_processing_state(False) # Mark processing as finished (due to error)
+                else:
+                    print(f"收到未知消息类型: {msg_type}")
+            else:
+                 print(f"收到非字典消息: {message}")
+        except queue.Empty:
+            pass # No messages in queue
+        finally:
+            # Schedule next check
+            self.after(100, self.process_queue)
+
+    def update_status(self, text):
+        """更新界面上的状态标签"""
+        # Assumes self.main_status_label exists (created in __init__)
+        if hasattr(self, 'main_status_label'):
+            self.main_status_label.config(text=text)
+        else:
+            print(f"Status Update (No Label): {text}")
+
+    def display_results(self, results):
+        """在 GeneralPage (如果当前显示) 的结果区域显示分析结果"""
+        # --- 1. 检查当前显示的页面是否是 GeneralPage ---
+        if self.current_frame_name == "ProfilesPage":
+            general_page = self.content_frames.get("ProfilesPage")
+            # --- 2. 检查 GeneralPage 是否有 results_text 控件 ---
+            if general_page and hasattr(general_page, 'results_text'):
+                results_widget = general_page.results_text
+                print(f"Displaying Results in GeneralPage...") # Debug
+                results_widget.config(state=tk.NORMAL)
+                results_widget.delete("1.0", tk.END)
+                if isinstance(results, list):
+                    for item in results:
+                        results_widget.insert(tk.END, f"{item}\n\n")
+                else:
+                     results_widget.insert(tk.END, str(results))
+                results_widget.config(state=tk.DISABLED)
+            else:
+                 print("警告：当前是 GeneralPage 但找不到 results_text 控件。")
+                 # Fallback: Show results in a messagebox?
+                 messagebox.showinfo("分析结果", str(results)[:1000])
+        else:
+            # 当前不在 GeneralPage，结果可以暂时忽略，或弹窗提示，或存起来等待切换回去再显示
+            print(f"结果已生成，但当前不在 GeneralPage。结果：{str(results)[:100]}")
+            # 可选：弹窗提示用户结果已生成
+            # messagebox.showinfo("处理完成", "邮件分析已完成，请切换回“通用”页面查看结果。")
+
+    def set_processing_state(self, processing: bool=None):
+        """设置处理状态并更新相关 UI (如禁用按钮)"""
+        if(processing!=None):self.is_processing = processing
+        else: self.is_processing=self.is_processing^1
+        # Find the process button (likely on GeneralPage) and update its state
+        ProfilesPage = self.content_frames.get("ProfilesPage")
+        if ProfilesPage and hasattr(ProfilesPage, "process_button"):
+            process_button = ProfilesPage.process_button
+            if self.is_processing:
+                # 处理中状态：更改按钮文本和样式
+                process_button.config(
+                    text="处理中...",  # 更改按钮文本
+                    # style="Processing.TButton"  # 使用自定义样式
+                )
+            else:
+                # 空闲状态：恢复按钮文本和样式
+                process_button.config(
+                    text="读取并分析邮件",  # 恢复按钮文本
+                    # style="Sidebar.TButton"  # 恢复默认样式
+                )
 # --- Page Frame Classes ---
 
 # --- Login Page ---
@@ -466,13 +655,8 @@ class GeneralPage(tk.Frame):
         credentials_frame.grid_columnconfigure(1, weight=1)
 
         # 保存按钮
-        save_cred_button = ttk.Button(credentials_frame, text="保存邮箱凭据", command=self.save_credentials)
+        save_cred_button = ttk.Button(credentials_frame, text="保存并登录", command=self.save_credentials)
         save_cred_button.grid(row=2, column=0, columnspan=2, pady=15) # 居中或靠左/右
-
-        # 其他通用设置内容... (可以放在凭据框架之后或之前)
-        # other_frame = ttk.Frame(self)
-        # other_frame.pack(pady=10, padx=30, fill="both", expand=True)
-        # ttk.Label(other_frame, text="这里可以放置其他通用开关...").pack(anchor="w")
 
     def load_credentials(self):
         """从控制器加载邮箱和IMAP密码到输入框"""
@@ -503,8 +687,13 @@ class GeneralPage(tk.Frame):
              return
 
         # 调用 App 的方法来处理保存和加密
-        self.controller.save_general_credentials(email, imap_password)
-        messagebox.showinfo("成功", "邮箱凭据已保存！")
+        email_client = IMAIL_163(email_account=email, email_password=imap_password)
+        if email_client.client!=None:
+            self.controller.save_general_credentials(email, imap_password)
+            messagebox.showinfo("登录成功", "邮箱凭据已保存！")
+            self.controller.email_client = email_client
+        else:
+            messagebox.showwarning("提示", "账号或IMAP授权码错误")
 
     def on_show(self):
         """当页面显示时调用"""
@@ -516,6 +705,12 @@ class GeneralPage(tk.Frame):
 
         # 加载邮箱凭据到输入框
         self.load_credentials()
+
+        # --- >>> 确保按钮状态正确 <<< ---
+        # 在显示页面时，根据 App 的 is_processing 状态设置按钮是否可用
+        if hasattr(self, 'process_button'): # 检查按钮是否已创建
+            self.process_button.config(state=tk.DISABLED if self.controller.is_processing else tk.NORMAL)
+        # --- >>> 确保结束 <<< ---
 
         print(f"Showing {self.page_name}")
 
@@ -650,7 +845,35 @@ class SettingsPage(tk.Frame):
         pass # 示例
 
 class PlaceholderPage(tk.Frame):
-     def __init__(self, parent, controller, page_name): super().__init__(parent); self.controller = controller; self.page_name = page_name; label = ttk.Label(self, text=f"{page_name} 内容区", font=("Arial", 14)); label.pack(padx=40, pady=40); note = ttk.Label(self, text="此页面内容尚未实现。"); note.pack(padx=40, pady=10)
+     def __init__(self, parent, controller, page_name): 
+        super().__init__(parent)
+        self.controller = controller; 
+        self.page_name = page_name; 
+        # --- >>> 新增: 邮件处理触发器和显示区域 <<< ---
+        process_frame = ttk.LabelFrame(self, text="邮件处理", padding=(10, 5))
+        # 使用 pack 将其放置在凭据框下方，并允许垂直扩展
+        process_frame.pack(pady=10, padx=30, fill="both", expand=True, anchor="n")
+
+        # ====>  在这里添加触发按钮  <====
+        self.process_button = ttk.Button(
+            process_frame, # 父容器是 process_frame
+            text="读取并分析邮件",
+            # 命令设置为调用 App 控制器的 start_email_processing 方法
+            command=self.controller.start_email_processing
+        )
+        # 将按钮放置在 process_frame 内部
+        self.process_button.pack(pady=(10, 15)) # 顶部和底部留些间距
+        # ====>  添加结束  <====
+
+        # 结果显示区域 (保持不变)
+        results_container = ttk.Frame(process_frame)
+        results_container.pack(fill="both", expand=True, pady=5)
+        self.results_text = tk.Text(results_container, height=10, wrap=tk.WORD, state=tk.DISABLED)
+        scrollbar = ttk.Scrollbar(results_container, orient="vertical", command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side=tk.RIGHT, fill="y")
+        self.results_text.pack(side=tk.LEFT, fill="both", expand=True)
+        # --- >>> 新增结束 <<< ---
      def on_show(self): pass
 
 
