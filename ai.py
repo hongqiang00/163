@@ -68,7 +68,7 @@ class QwenAPIHandler:
                 extracted_info = json.loads(cleaned_response)
                 print("提取的信息:")
                 for person in extracted_info:
-                    # print(person)
+                    print(person)
                     client=Person(person['学生姓名'],person['联系电话'],person['意向地区'],person['微信'],person['源文本内容'],ip_phone_get(person['联系电话']))
                     clients.append(client)
             except json.JSONDecodeError as e:

@@ -8,6 +8,7 @@ import threading
 import queue
 import imaplib # 用于捕获 IMAP 错误
 import time
+from excelsave import save_to_excel
 try:
     from imap import IMAIL_163 # <-- 导入你的主类
     from ai import QwenAPIHandler
@@ -102,6 +103,7 @@ class App(tk.Tk):
         self.email_client = None
         self.handler = QwenAPIHandler()
         self.sleep_time=30
+        self.email_selected_folders = None
         self.proxy_model = DEFAULT_PROXY_MODEL
         # --- Backend Processing State ---
         self.is_processing = False          # <-- Correctly initialized
@@ -196,6 +198,9 @@ class App(tk.Tk):
                     print(f"WARN: Invalid proxy_model '{self.proxy_model}' found in config. Using default.")
                     self.proxy_model = DEFAULT_PROXY_MODEL  
 
+                # --- >>> 加载邮箱文件 <<< ---
+                self.email_selected_folders = config.get(CONFIG_SECTION, 'email_selected_folders', fallback="").split(",")
+
         except (configparser.Error, ValueError) as e:
             print(f"Error reading config file '{CONFIG_FILE}': {e}")
             # Reset to defaults on error
@@ -284,7 +289,7 @@ class App(tk.Tk):
     def setup_main_interface(self):
         # ... (Identical to previous version) ...
         self.sidebar_frame.pack(side="left", fill="y")
-        sidebar_options = {"GeneralPage": "通用", "ProxiesPage": "代理", "ProfilesPage": "配置", "SettingsPage": "设置", "AboutPage": "关于"}
+        sidebar_options = {"GeneralPage": "邮箱", "ProxiesPage": "代理", "ProfilesPage": "配置", "SettingsPage": "设置", "AboutPage": "关于"}
         for page_name, display_text in sidebar_options.items():
             button = ttk.Button(self.sidebar_frame, text=display_text, style=BUTTON_STYLE_NAME, command=lambda p=page_name: self.show_frame(p))
             button.pack(fill="x", pady=1, padx=5)
@@ -292,7 +297,7 @@ class App(tk.Tk):
         ttk.Separator(self.sidebar_frame, orient='horizontal').pack(fill='x', pady=10, padx=5)
         logout_button = ttk.Button(self.sidebar_frame, text="登出", style=BUTTON_STYLE_NAME, command=self.logout)
         logout_button.pack(fill="x", side="bottom", pady=10, padx=5)
-        pages = {"GeneralPage": GeneralPage, "ProxiesPage": ProxiesPage, "ProfilesPage": PlaceholderPage, "SettingsPage": SettingsPage, "AboutPage": PlaceholderPage}
+        pages = {"GeneralPage": GeneralPage, "ProxiesPage": ProxiesPage, "ProfilesPage": PlaceholderPage, "SettingsPage": SettingsPage, "AboutPage": AboutPage}
         print("--- 开始创建 Frame ---")
         for name, PageClass in pages.items():
             print(f"尝试创建 Frame: {name}")
@@ -407,9 +412,9 @@ class App(tk.Tk):
         """这个函数在单独的线程中运行 (使用 IMAIL_163 和 ai.analyze_qwen)"""
         while(True):
             if(self.is_processing==False):return
+
             all_analysis_results = []
             email_list = []
-
             try:
                 # 阶段 1: 初始化并读取邮件
                 q.put({"type": "status", "data": "正在初始化邮箱连接..."})
@@ -421,11 +426,14 @@ class App(tk.Tk):
                     if not self.email_client.client: # 检查 _login 是否成功返回了客户端对象
                         raise ConnectionRefusedError("邮箱登录失败，请检查账号或 IMAP 授权码。") # 更明确的错误
                     q.put({"type": "status", "data": "连接成功！"})
-                    for folder in self.email_client.selected_floders:
+                    for folder in self.email_selected_folders:
                         email_list+=self.email_client.read_emailfolder(folder)
                     
                     for email in email_list:
-                        all_analysis_results+self.handler.call_api(email.mail_content['plain_text'])
+                        all_analysis_results+=self.handler.call_api(email.mail_content['plain_text'])
+
+                    save_to_excel(all_analysis_results)
+                    q.put({"type": "result", "data": "邮件处理完成！"})
                     q.put({"type": "status", "data": "邮件处理完成！"})
                 except ConnectionRefusedError as login_e: # 捕获我们自己抛出的
                     raise login_e
@@ -442,6 +450,8 @@ class App(tk.Tk):
                     err_msg = f"IMAP 操作失败: {e}"
                 print(err_msg)
                 q.put({"type": "error", "data": err_msg})
+                self.email_client = None
+
             except Exception as e: # 捕获所有其他意外错误
                 print(f"后台处理出错: {e}")
                 import traceback
@@ -504,12 +514,12 @@ class App(tk.Tk):
                      results_widget.insert(tk.END, str(results))
                 results_widget.config(state=tk.DISABLED)
             else:
-                 print("警告：当前是 GeneralPage 但找不到 results_text 控件。")
+                 print("警告：当前是 ProfilesPage 但找不到 results_text 控件。")
                  # Fallback: Show results in a messagebox?
                  messagebox.showinfo("分析结果", str(results)[:1000])
         else:
             # 当前不在 GeneralPage，结果可以暂时忽略，或弹窗提示，或存起来等待切换回去再显示
-            print(f"结果已生成，但当前不在 GeneralPage。结果：{str(results)[:100]}")
+            print(f"结果已生成，但当前不在 ProfilesPage。结果：{str(results)[:100]}")
             # 可选：弹窗提示用户结果已生成
             # messagebox.showinfo("处理完成", "邮件分析已完成，请切换回“通用”页面查看结果。")
 
@@ -630,7 +640,7 @@ class GeneralPage(tk.Frame):
         # 顶部框架（包含标题和用户信息）
         top_frame = ttk.Frame(self)
         top_frame.pack(fill="x", padx=20, pady=(20, 10))
-        ttk.Label(top_frame, text="通用", font=("Arial", 16)).pack(side="left", anchor="w")
+        ttk.Label(top_frame, text="邮箱", font=("Arial", 16)).pack(side="left", anchor="w")
         self.user_label = ttk.Label(top_frame, text="")
         self.user_label.pack(side="right", anchor="e") # 用户信息放右边
 
@@ -658,6 +668,24 @@ class GeneralPage(tk.Frame):
         save_cred_button = ttk.Button(credentials_frame, text="保存并登录", command=self.save_credentials)
         save_cred_button.grid(row=2, column=0, columnspan=2, pady=15) # 居中或靠左/右
 
+        # 邮件文件夹
+        folder_frame = ttk.LabelFrame(self, text="邮箱文件夹选择", padding=(10, 5)) # 使用 LabelFrame 视觉分组
+        folder_frame.pack(pady=10, padx=30, fill="x", anchor="n")
+
+        folder_frame.grid_columnconfigure(1, weight=1)
+
+        # Folder selection Listbox
+        self.folder_listbox = tk.Listbox(folder_frame, selectmode=tk.MULTIPLE, height=10)
+        self.folder_listbox.grid(row=3, column=0, columnspan=2, padx=5, pady=8, sticky="ew")
+
+        # Scrollbar for the Listbox
+        scrollbar = ttk.Scrollbar(folder_frame, orient="vertical", command=self.folder_listbox.yview)
+        scrollbar.grid(row=3, column=2, sticky="ns")
+        self.folder_listbox.config(yscrollcommand=scrollbar.set)    
+
+        # 保存文件夹选择按钮
+        save_fol_button = ttk.Button(folder_frame, text="确认文件夹", command=self.save_folders)
+        save_fol_button.grid(column=0, columnspan=2, pady=15) # 居中或靠左/右
     def load_credentials(self):
         """从控制器加载邮箱和IMAP密码到输入框"""
         email = self.controller.get_general_email()
@@ -692,9 +720,48 @@ class GeneralPage(tk.Frame):
             self.controller.save_general_credentials(email, imap_password)
             messagebox.showinfo("登录成功", "邮箱凭据已保存！")
             self.controller.email_client = email_client
+            # self.controller.email_folders = email_client.email_flodernamelist
+            self.load_folders()  # Load folders after successful login
         else:
             messagebox.showwarning("提示", "账号或IMAP授权码错误")
 
+    def load_folders(self):
+        """加载邮箱文件夹到 Listbox"""
+        self.folder_listbox.delete(0, tk.END)  # Clear existing entries
+        folders =  self.controller.email_client.email_flodernamelist  # Assuming selected_floders is the attribute containing folder names
+        
+        for index, folder in enumerate(folders):
+                self.folder_listbox.insert(tk.END, folder)
+                if folder in self.controller.email_selected_folders:
+                    self.folder_listbox.selection_set(index)
+        print("Folders loaded into Listbox.")  # Debug
+
+    def save_folders(self):
+        """保存用户选择的邮箱文件夹"""
+        selected_indices = self.folder_listbox.curselection()
+        selected_folders = [self.folder_listbox.get(i) for i in selected_indices]
+
+        if not selected_folders:
+            messagebox.showwarning("提示", "请选择至少一个文件夹。")
+            return
+        # 更新参数
+        self.controller.email_selected_folders = selected_folders
+        # 保存文件夹到配置文件
+        try:
+            config = configparser.ConfigParser()
+            if os.path.exists(CONFIG_FILE):
+                config.read(CONFIG_FILE)
+            if not config.has_section(CONFIG_SECTION):
+                config.add_section(CONFIG_SECTION)
+
+            config.set(CONFIG_SECTION, 'email_selected_folders', ','.join(selected_folders))
+
+            with open(CONFIG_FILE, 'w') as configfile:
+                config.write(configfile)
+            print(f"Selected folders saved: {self.controller.email_selected_folders}") # Debug print
+            messagebox.showinfo("成功", "文件夹选择已保存！")
+        except (IOError, configparser.Error) as e:
+            messagebox.showerror("错误", f"无法保存文件夹选择:\n{e}")
     def on_show(self):
         """当页面显示时调用"""
         # 更新用户信息标签
@@ -779,7 +846,7 @@ class SettingsPage(tk.Frame):
         self.page_name = page_name
 
         # 1. 页面主标题
-        ttk.Label(self, text="详细参数设置", font=("Arial", 16)).pack(pady=20, padx=20, anchor="w")
+        ttk.Label(self, text="其它参数设置", font=("Arial", 16)).pack(pady=20, padx=20, anchor="w")
 
         # 2. 创建用于容纳设置控件的内部 Frame
         settings_frame = ttk.Frame(self)
@@ -798,21 +865,21 @@ class SettingsPage(tk.Frame):
         self.profile_entry.grid(row=0, column=1, padx=5, pady=8, sticky="ew")
 
         # Port
-        ttk.Label(settings_frame, text="端口 (SOCKS/HTTP):").grid(row=1, column=0, padx=5, pady=8, sticky="w")
-        self.port_spinbox = ttk.Spinbox(settings_frame, from_=1024, to=65535, width=10) # Example range
+        ttk.Label(settings_frame, text="邮件读取周期:").grid(row=1, column=0, padx=5, pady=8, sticky="w")
+        self.port_spinbox = ttk.Spinbox(settings_frame, from_=10, to=3600, width=10) # Example range
         self.port_spinbox.grid(row=1, column=1, padx=5, pady=8, sticky="w") # Stick west
 
-        # Allow LAN
-        self.allow_lan_var = tk.BooleanVar()
-        lan_check = ttk.Checkbutton(settings_frame, text="允许来自局域网的连接", variable=self.allow_lan_var)
-        lan_check.grid(row=2, column=0, columnspan=2, padx=5, pady=8, sticky="w")
+        # # Allow LAN
+        # self.allow_lan_var = tk.BooleanVar()
+        # lan_check = ttk.Checkbutton(settings_frame, text="允许来自局域网的连接", variable=self.allow_lan_var)
+        # lan_check.grid(row=2, column=0, columnspan=2, padx=5, pady=8, sticky="w")
 
         # Mode
-        ttk.Label(settings_frame, text="模式:").grid(row=3, column=0, padx=5, pady=8, sticky="w")
-        self.mode_options = ["Rule", "Global", "Direct"]
-        self.mode_var = tk.StringVar()
-        mode_combo = ttk.Combobox(settings_frame, textvariable=self.mode_var, values=self.mode_options, state="readonly", width=15)
-        mode_combo.grid(row=3, column=1, padx=5, pady=8, sticky="w") # Stick west
+        # ttk.Label(settings_frame, text="模式:").grid(row=3, column=0, padx=5, pady=8, sticky="w")
+        # self.mode_options = ["Rule", "Global", "Direct"]
+        # self.mode_var = tk.StringVar()
+        # mode_combo = ttk.Combobox(settings_frame, textvariable=self.mode_var, values=self.mode_options, state="readonly", width=15)
+        # mode_combo.grid(row=3, column=1, padx=5, pady=8, sticky="w") # Stick west
 
         # 让控件列可以伸展
         settings_frame.grid_columnconfigure(1, weight=1)
@@ -876,7 +943,14 @@ class PlaceholderPage(tk.Frame):
         # --- >>> 新增结束 <<< ---
      def on_show(self): pass
 
-
+class AboutPage(tk.Frame):
+    def __init__(self, parent, controller, page_name):
+        super().__init__(parent)
+        self.controller = controller
+        self.page_name = page_name
+    
+    def on_show(self):
+        pass
 # --- Run the Application ---
 if __name__ == "__main__":
     # Ensure a valid key is set before running

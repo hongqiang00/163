@@ -39,8 +39,9 @@ class IMAIL_163:
         self.email_account=email_account
         self.email_password=email_password
         self.client=self._login()
-        self.email_flodernamelist=self.fetch_floders()
-        self.selected_floders=['edu66']
+        self.exclude_folders = ["已发送", "已删除", "垃圾邮件", "病毒文件夹", "草稿箱", "广告邮件", "订阅邮件"]  # 需要排除的文件夹
+        self.email_flodernamelist=[folder for folder in self.fetch_floders() if folder not in self.exclude_folders]
+        self.selected_floders=['INBOX']
         
     def _login(self,host="imap.163.com" ):
         # 尝试建立SSL加密的IMAP连接并登录
@@ -102,7 +103,10 @@ class IMAIL_163:
         except Exception as e:
             print(f"关闭 IMAP 连接时发生错误: {e}")
 
-    def read_emailfolder(self, mailbox_folder):
+    def read_emailfolder(self, mailbox_folder=None):
+        if mailbox_folder is None:
+            mailbox_folder = self.selected_floders[0]
+
         encode_mailbox_folder=encode_utf7_folder_name(mailbox_folder)
         email_info_list=[]
         try:

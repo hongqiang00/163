@@ -10,23 +10,22 @@ def save_to_excel(persons,file_path=os.path.join(BASE_DIR, "data", "students_inf
     :param file_path: Excel 文件路径
     :param students_info: 学生信息列表，每个元素是一个字典，格式为 {'姓名': '张三', '电话': '123456789', ...}
     """
-    if(type(person)!=dict):
-        if (len(persons)==0):
-            return
+    if not persons:
+        print("没有学生信息需要保存。")
+        return
         
-        students_info=[]
-        for person in persons:
-            student={
-                "学生姓名":person.name,
-                "联系电话":person.phone,
-                "微信":person.wechat,
-                "意向地区":person.intention,
-                "号码归属地区":person.area,
-                "源文本内容":person.others
-            }
-            students_info.append(student)
-    else:
-        students_info=persons
+    students_info=[]
+    for person in persons:
+        student={
+            "学生姓名":person.name,
+            "联系电话":person.phone,
+            "微信":person.wechat,
+            "意向地区":person.intention,
+            "号码归属地区":person.area,
+            "源文本内容":person.others
+        }
+        students_info.append(student)
+
 
     # 检查文件是否存在
     try:
